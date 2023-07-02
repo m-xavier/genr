@@ -80,9 +80,12 @@ where
 {
     type OwnedIter;
 
-    /// Returns the number of valid elements in the container.
+    /// Returns the number of valid elements in `self`.
     /// This may not be representative of the actual underlying length.
     fn count(&self) -> usize;
+    /// Returns `true` if there are no valid elements in `self`, otherwise
+    /// returns `false`.
+    fn is_empty(&self) -> bool;
 
     /// Returns `true` if the index passed refers to a valid element.
     fn contains(&self, gidx: GIdx) -> bool;

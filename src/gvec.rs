@@ -34,7 +34,7 @@ pub use gvec;
 /// Note that `GVec` does not promise that a `GIdx` provided by you was sourced
 /// from the same `GVec`. Using a `GIdx` from a different `GVec` will result in
 /// the retrieval of an unexpected value.
-#[derive(Clone)]
+#[derive(Clone, Debug, Default)]
 pub struct GVec<T> {
     data: Vec<Option<T>>,
     gens: Vec<usize>,
@@ -43,6 +43,13 @@ pub struct GVec<T> {
 
 impl<T> GVec<T> {
     /// Returns a new, empty `GVec`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let chars: GVec<char> = GVec::new();
+    /// assert!(chars.is_empty());
+    /// ```
     pub fn new() -> Self {
         Self {
             data: Vec::new(),
@@ -50,10 +57,20 @@ impl<T> GVec<T> {
             dead: Vec::new(),
         }
     }
+
     /// Returns a tuple containing a new `GVec` filled with the contents of
     /// `value` and an array containing their corresponding indices.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (chars, [a, b, c]) = GVec::from(['a', 'b', 'c']);
+    /// assert_eq!(chars[a], 'a');
+    /// assert_eq!(chars[b], 'b');
+    /// assert_eq!(chars[c], 'c');
+    /// ```
     pub fn from<const N: usize>(value: [T; N]) -> (Self, [GIdx; N]) {
-        let mut i = 0;
+        let mut idxs = 0..N;
         (
             Self {
                 data: Vec::from(value.map(|v| Some(v))),
@@ -61,9 +78,7 @@ impl<T> GVec<T> {
                 dead: Vec::new(),
             },
             [GIdx { idx: 0, gen: 0 }; N].map(|mut g| {
-                g.idx = i;
-                i += 1;
-                g
+                g.idx = idxs.next().unwrap(); g
             }),
         )
     }
@@ -98,7 +113,7 @@ impl<T> IntoIterator for GVec<T> {
 impl<T> Generational<T> for GVec<T> {
     type OwnedIter = VecIntoIter<Option<T>>;
 
-    /// Returns the number of valid elements in the container.
+    /// Returns the number of valid elements in `self`.
     /// This may not be representative of the actual underlying length.
     ///
     /// # Examples
@@ -114,6 +129,21 @@ impl<T> Generational<T> for GVec<T> {
         self.data
             .iter()
             .fold(0, |acc, i| acc + i.is_some() as usize)
+    }
+
+    /// Returns `true` if there are no valid elements in `self`, otherwise
+    /// returns `false`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// chars.clear();
+    ///
+    /// assert!(chars.is_empty());
+    /// ```
+    fn is_empty(&self) -> bool {
+        self.dead.len() == self.data.len()
     }
 
     /// Returns `true` if the index passed refers to a valid element.
@@ -219,12 +249,27 @@ impl<T> Generational<T> for GVec<T> {
 
     /// Returns `Some(&T)` if the index is valid or `None` if the
     /// index is not.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.get(b), Some(&'b'));
+    /// ```
     fn get(&self, gidx: GIdx) -> Option<&T> {
         self.contains(gidx)
             .then(|| self.data[gidx.idx].as_ref().unwrap())
     }
+
     /// Returns `Some(&mut T)` if the index is valid or `None` if the
     /// index is not.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.get_mut(b), Some(&mut 'b'));
+    /// ```
     fn get_mut(&mut self, gidx: GIdx) -> Option<&mut T> {
         self.contains(gidx)
             .then(|| self.data[gidx.idx].as_mut().unwrap())
@@ -232,18 +277,53 @@ impl<T> Generational<T> for GVec<T> {
 
     /// Sets the value at the provided index to `value`, returning
     /// either the original value or `None` if the index is invalid.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let original = chars.set(b, 'B');
+    ///
+    /// assert_eq!(chars[b], 'B');
+    /// assert_eq!(original, Some('b'));
+    /// ```
     fn set(&mut self, gidx: GIdx, value: T) -> Option<T> {
         self.contains(gidx)
             .then(|| self.data[gidx.idx].replace(value).unwrap())
     }
 
     /// Returns an iterator which iterates over all values.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (chars, _) = gvec!['a', 'b', 'c'];
+    /// let mut iterator = chars.iter();
+    ///
+    /// assert_eq!(iterator.next(), Some(&'a'));
+    /// assert_eq!(iterator.next(), Some(&'b'));
+    /// assert_eq!(iterator.next(), Some(&'c'));
+    /// assert_eq!(iterator.next(), None);
+    /// ```
     fn iter(&self) -> Iter<'_, T> {
         Iter::<'_, T> {
             inner: self.data.iter(),
         }
     }
+
     /// Returns an iterator which mutably iterates over all values.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// let mut iterator = chars.iter_mut();
+    ///
+    /// assert_eq!(iterator.next(), Some(&mut 'a'));
+    /// assert_eq!(iterator.next(), Some(&mut 'b'));
+    /// assert_eq!(iterator.next(), Some(&mut 'c'));
+    /// assert_eq!(iterator.next(), None);
+    /// ```
     fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut::<'_, T> {
             inner: self.data.iter_mut(),
@@ -251,10 +331,25 @@ impl<T> Generational<T> for GVec<T> {
     }
 
     /// Returns a `Vec` containing a reference to all values.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (chars, _) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.gather(), vec![&'a', &'b', &'c']);
+    /// ```
     fn gather(&self) -> Vec<&T> {
         self.data.iter().filter_map(|i| i.as_ref()).collect()
     }
+
     /// Returns a `Vec` containing a mutable reference to all values.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.gather_mut(), vec![&mut 'a', &mut 'b', &mut 'c']);
+    /// ```
     fn gather_mut(&mut self) -> Vec<&mut T> {
         self.data.iter_mut().filter_map(|i| i.as_mut()).collect()
     }
