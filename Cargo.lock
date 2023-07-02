@@ -3,5 +3,5 @@
 version = 3
 
 [[package]]
-name = "garray"
+name = "genr"
 version = "0.1.0"
