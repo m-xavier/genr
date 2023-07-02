@@ -3,7 +3,7 @@
 use std::ops::{Index, IndexMut};
 
 /// Short for "Generational Index". A `GIdx` can only be created by a
-/// structure which implements `Gen`, and will only refer to
+/// structure which implements `Generational`, and will only refer to
 /// the intended value if used with the original source struct.
 #[derive(Clone, Copy, Debug)]
 pub struct GIdx {
@@ -57,7 +57,7 @@ where
 }
 
 /// Describes a data structure which supports generational indexing.
-/// Any implementer of `Gen` must uphold the following rules:
+/// Any implementer of `Generational` must uphold the following rules:
 ///
 /// 1. Inserting an item returns a `GIdx`, which must be valid for
 /// as long as that item exists.
@@ -68,17 +68,17 @@ where
 /// 3. If another item is inserted afterwards, the ABA problem is
 /// prevented via the use of "generations".
 ///
-/// Note that a `Gen` data structure does not promise that a `GIdx` provided 
-/// by you was sourced from the same struct. Using a `GIdx` from a different 
+/// Note that a `Generational` data structure does not promise that a `GIdx` provided
+/// by you was sourced from the same struct. Using a `GIdx` from a different
 /// struct will result in the retrieval of an unexpected value.
-pub trait Gen<T>
+pub trait Generational<T>
 where
-    Self: IntoIterator<Item = T, IntoIter = IntoIter<T, Self::IntoIterKind>>
+    Self: IntoIterator<Item = T, IntoIter = IntoIter<T, Self::OwnedIter>>
         + Index<GIdx>
         + IndexMut<GIdx>,
-    Self::IntoIterKind: Iterator<Item = Option<T>>,
+    Self::OwnedIter: Iterator<Item = Option<T>>,
 {
-    type IntoIterKind;
+    type OwnedIter;
 
     /// Returns the number of valid elements in the container.
     /// This may not be representative of the actual underlying length.

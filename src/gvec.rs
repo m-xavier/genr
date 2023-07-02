@@ -5,7 +5,7 @@ use std::{
     vec::IntoIter as VecIntoIter,
 };
 
-use crate::gen::*;
+use crate::generational::*;
 
 #[macro_export]
 macro_rules! gvec {
@@ -16,10 +16,10 @@ macro_rules! gvec {
         GVec::from([$($item),*])
     };
 }
-pub(crate) use gvec;
+pub use gvec;
 
 /// A generational container which is dynamically sized, similar to a `Vec`.
-/// 
+///
 /// `GVec` promises to uphold the following rules:
 ///
 /// 1. Inserting an item returns a `GIdx`, which must be valid for
@@ -31,8 +31,8 @@ pub(crate) use gvec;
 /// 3. If another item is inserted afterwards, the ABA problem is
 /// prevented via the use of "generations".
 ///
-/// Note that `GVec` does not promise that a `GIdx` provided by you was sourced 
-/// from the same `GVec`. Using a `GIdx` from a different `GVec` will result in 
+/// Note that `GVec` does not promise that a `GIdx` provided by you was sourced
+/// from the same `GVec`. Using a `GIdx` from a different `GVec` will result in
 /// the retrieval of an unexpected value.
 #[derive(Clone)]
 pub struct GVec<T> {
@@ -95,33 +95,87 @@ impl<T> IntoIterator for GVec<T> {
     }
 }
 
-impl<T> Gen<T> for GVec<T> {
-    type IntoIterKind = VecIntoIter<Option<T>>;
+impl<T> Generational<T> for GVec<T> {
+    type OwnedIter = VecIntoIter<Option<T>>;
 
+    /// Returns the number of valid elements in the container.
+    /// This may not be representative of the actual underlying length.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.count(), 3);
+    ///
+    /// chars.remove(b);
+    /// assert_eq!(chars.count(), 2);
+    /// ```
     fn count(&self) -> usize {
-        self.data.iter().fold(0, |acc, i| acc + i.is_some() as usize)
+        self.data
+            .iter()
+            .fold(0, |acc, i| acc + i.is_some() as usize)
     }
 
+    /// Returns `true` if the index passed refers to a valid element.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.contains(b), true);
+    ///
+    /// chars.remove(b);
+    /// assert_eq!(chars.contains(b), false);
+    /// ```
     fn contains(&self, gidx: GIdx) -> bool {
         gidx.idx < self.gens.len()
             && gidx.gen == self.gens[gidx.idx]
             && self.data[gidx.idx].is_some()
     }
 
+    /// Inserts an item into `self`, returning an index which refers to it.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let mut chars = gvec![];
+    /// let a = chars.insert('a');
+    ///
+    /// assert_eq!(chars[a], 'a');
+    /// ```
     fn insert(&mut self, item: T) -> GIdx {
         match self.dead.pop() {
             Some(idx) => {
                 self.data[idx] = Some(item);
                 self.gens[idx] += 1;
-                GIdx { idx, gen: self.gens[idx] }
-            },
+                GIdx {
+                    idx,
+                    gen: self.gens[idx],
+                }
+            }
             None => {
                 self.data.push(Some(item));
                 self.gens.push(0);
-                GIdx { idx: self.data.len() - 1, gen: 0 }
+                GIdx {
+                    idx: self.data.len() - 1,
+                    gen: 0,
+                }
             }
         }
     }
+
+    /// Removes the item from `self`, returning `Some(T)` if the
+    /// index is valid, or `None` if the index is not.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// assert_eq!(chars.remove(a), Some('a'));
+    /// assert_eq!(chars.remove(b), Some('b'));
+    /// assert_eq!(chars.remove(c), Some('c'));
+    /// assert_eq!(chars.count(), 0);
+    /// ```
     fn remove(&mut self, gidx: GIdx) -> Option<T> {
         self.contains(gidx).then(|| {
             self.gens[gidx.idx] += 1;
@@ -130,40 +184,77 @@ impl<T> Gen<T> for GVec<T> {
         })
     }
 
+    /// Clears `self`, removing all values.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// chars.clear();
+    ///
+    /// assert_eq!(chars.count(), 0);
+    /// ```
     fn clear(&mut self) {
         self.dead = (0..self.data.len()).collect();
-        for item in self.data.iter_mut() { *item = None }
+        for item in self.data.iter_mut() {
+            *item = None
+        }
     }
+
+    /// Clears `self`, returning any valid data in a `Vec`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// let vec_chars = chars.extract();
+    ///
+    /// assert_eq!(chars.count(), 0);
+    /// assert_eq!(vec_chars, vec!['a', 'b', 'c']);
+    /// ```
     fn extract(&mut self) -> Vec<T> {
         self.dead = (0..self.data.len()).collect();
         self.data.iter_mut().filter_map(|i| i.take()).collect()
     }
 
+    /// Returns `Some(&T)` if the index is valid or `None` if the
+    /// index is not.
     fn get(&self, gidx: GIdx) -> Option<&T> {
-        self.contains(gidx).then(|| self.data[gidx.idx].as_ref().unwrap())
+        self.contains(gidx)
+            .then(|| self.data[gidx.idx].as_ref().unwrap())
     }
+    /// Returns `Some(&mut T)` if the index is valid or `None` if the
+    /// index is not.
     fn get_mut(&mut self, gidx: GIdx) -> Option<&mut T> {
-        self.contains(gidx).then(|| self.data[gidx.idx].as_mut().unwrap())
+        self.contains(gidx)
+            .then(|| self.data[gidx.idx].as_mut().unwrap())
     }
 
+    /// Sets the value at the provided index to `value`, returning
+    /// either the original value or `None` if the index is invalid.
     fn set(&mut self, gidx: GIdx, value: T) -> Option<T> {
-        self.contains(gidx).then(|| self.data[gidx.idx].replace(value).unwrap())
+        self.contains(gidx)
+            .then(|| self.data[gidx.idx].replace(value).unwrap())
     }
 
+    /// Returns an iterator which iterates over all values.
     fn iter(&self) -> Iter<'_, T> {
         Iter::<'_, T> {
             inner: self.data.iter(),
         }
     }
+    /// Returns an iterator which mutably iterates over all values.
     fn iter_mut(&mut self) -> IterMut<'_, T> {
         IterMut::<'_, T> {
             inner: self.data.iter_mut(),
         }
     }
 
+    /// Returns a `Vec` containing a reference to all values.
     fn gather(&self) -> Vec<&T> {
         self.data.iter().filter_map(|i| i.as_ref()).collect()
     }
+    /// Returns a `Vec` containing a mutable reference to all values.
     fn gather_mut(&mut self) -> Vec<&mut T> {
         self.data.iter_mut().filter_map(|i| i.as_mut()).collect()
     }
