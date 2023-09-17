@@ -2,38 +2,51 @@
 
 use std::{
     ops::{Index, IndexMut},
-    vec::IntoIter as VecIntoIter,
+    array::IntoIter as ArrIntoIter,
 };
 
 use crate::generational::*;
 
-/// A convenience macro for creating `GVec`s.
+/// A convenience macro for creating `GArr`s.
 /// 
 /// # Examples
 /// ```
 /// # use genr::prelude::*;
-/// let empty_a: GVec<&str> = gvec![];
-/// let empty_b: GVec<&str> = GVec::new();
+/// let empty_a = garr![;char, 3];
+/// let empty_b: GArr<char, 3> = GArr::new();
 /// assert_eq!(empty_a.gather(), empty_b.gather());
 /// 
-/// let (foo_a, _) = gvec!["foo"];
-/// let (foo_b, _) = GVec::from(["foo"]);
-/// assert_eq!(foo_a.gather(), foo_b.gather())
+/// let (from_a, _) = garr!['a', 'b', 'c'];
+/// let (from_b, _) = GArr::from(['a', 'b', 'c']);
+/// assert_eq!(from_a.gather(), from_b.gather());
+///
+/// let (partial_a, _) = garr!['a', 'b', 'c'; char, 5];
+/// let (partial_b, _) = GArr::<char, 5>::from_partial(['a', 'b', 'c']);
+/// assert_eq!(partial_a.gather(), partial_b.gather())
 /// ```
 #[macro_export]
-macro_rules! gvec {
+macro_rules! garr {
     () => {
-        GVec::new()
+        GArr::new()
+    };
+    (;$t:ty,$n:tt) => {
+        GArr::<$t, $n>::new()
     };
     ($($item:tt),*) => {
-        GVec::from([$($item),*])
+        GArr::from([$($item),*])
+    };
+    ($item:tt;$n:tt) => {
+        GArr::from([$item; $n])
+    };
+    ($($item:tt),+;$t:ty,$n:tt) => {
+        GArr::<$t, $n>::from_partial([$($item),*])
     };
 }
-pub use gvec;
+pub use garr;
 
-/// A generational container which is dynamically sized, similar to a `Vec`.
+/// A generational container which is statically sized, just like a primitive array.
 ///
-/// `GVec` promises to uphold the following rules:
+/// `GArr` promises to uphold the following rules:
 ///
 /// 1. Inserting an item returns a `GIdx`, which must be valid for
 /// as long as that item exists.
@@ -44,57 +57,102 @@ pub use gvec;
 /// 3. If another item is inserted afterwards, the ABA problem is
 /// prevented via the use of "generations".
 ///
-/// Note that `GVec` does not promise that a `GIdx` provided by you was sourced
-/// from the same `GVec`. Using a `GIdx` from a different `GVec` will result in
+/// Note that `GArr` does not promise that a `GIdx` provided by you was sourced
+/// from the same `GArr`. Using a `GIdx` from a different `GArr` will result in
 /// the retrieval of an unexpected value.
-#[derive(Clone, Debug, Default)]
-pub struct GVec<T> {
-    data: Vec<Option<T>>,
-    gens: Vec<usize>,
+/// 
+/// As `GArr` is also statically sized, there is a chance that inserting may fail 
+/// if it is at capacity, panicking. 
+#[derive(Clone, Debug)]
+pub struct GArr<T, const N: usize> {
+    data: [Option<T>; N],
+    gens: [usize; N],
     dead: Vec<usize>,
+    used: usize,
 }
 
-impl<T> GVec<T> {
-    /// Returns a new, empty `GVec`.
+impl<T, const N: usize> GArr<T, N> {
+    /// Returns a new, empty `GArr`.
     ///
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let chars: GVec<char> = GVec::new();
+    /// let chars: GArr<char, 3> = GArr::new();
     /// assert!(chars.is_empty());
     /// ```
     pub fn new() -> Self {
         Self {
-            data: Vec::new(),
-            gens: Vec::new(),
-            dead: Vec::new(),
+            data: std::array::from_fn(|_| None),
+            gens: [0; N],
+            dead: Vec::with_capacity(N),
+            used: 0,
         }
     }
 
-    /// Returns a tuple containing a new `GVec` filled with the contents of
+    /// Returns a tuple containing a new `GArr` filled with the contents of
     /// `value` and an array containing their corresponding indices.
     ///
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (chars, [a, b, c]): (GVec<char>, [GIdx; 3]) = GVec::from(['a', 'b', 'c']);
+    /// let (chars, [a, b, c]): (GArr<char, 3>, [GIdx; 3]) = GArr::from(['a', 'b', 'c']);
     /// assert_eq!(chars[a], 'a');
     /// assert_eq!(chars[b], 'b');
     /// assert_eq!(chars[c], 'c');
     /// ```
-    pub fn from<const N: usize>(value: [T; N]) -> (Self, [GIdx; N]) {
+    pub fn from(value: [T; N]) -> (Self, [GIdx; N]) {
         (
             Self {
-                data: Vec::from(value.map(|v| Some(v))),
-                gens: Vec::from([0; N]),
-                dead: Vec::new(),
+                data: value.map(|i| Some(i)),
+                gens: [0; N],
+                dead: Vec::with_capacity(N),
+                used: N,
             },
             std::array::from_fn(|i| GIdx { idx: i, gen: 0 }),
         )
     }
+
+    /// Returns a tuple containing a new `GArr` filled with the contents of
+    /// `value` and an array containing their corresponding indices.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let (chars, [a, b, c]) = GArr::<char, 5>::from_partial(['a', 'b', 'c']);
+    /// assert_eq!(chars[a], 'a');
+    /// assert_eq!(chars[b], 'b');
+    /// assert_eq!(chars[c], 'c');
+    /// ```
+    pub fn from_partial<const TN: usize>(value: [T; TN]) -> (Self, [GIdx; TN]) {
+        let mut out = Self::new();
+        let out_idxs = out.insert_arr(value).map(|idx| idx.unwrap());
+        (out, out_idxs)
+    }
+
+    /// Returns `true` if all indexes are occupied, otherwise returns `false`.
+    ///
+    /// # Examples
+    /// ```
+    /// # use genr::prelude::*;
+    /// let mut chars: GArr<char, 3> = garr![];
+    /// assert!(chars.is_empty());
+    ///
+    /// chars.insert_arr(['a', 'b', 'c']);
+    /// assert!(chars.is_full())
+    /// ```
+    pub fn is_full(&self) -> bool {
+        println!("{}, {}, {}", self.used, N, self.count());
+        self.used == N && self.dead.is_empty()
+    }
 }
 
-impl<T> Index<GIdx> for GVec<T> {
+impl<T, const N: usize> Default for GArr<T, N> {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl<T, const N: usize> Index<GIdx> for GArr<T, N> {
     type Output = T;
     fn index(&self, gidx: GIdx) -> &Self::Output {
         assert!(self.contains(gidx));
@@ -102,16 +160,16 @@ impl<T> Index<GIdx> for GVec<T> {
     }
 }
 
-impl<T> IndexMut<GIdx> for GVec<T> {
+impl<T, const N: usize> IndexMut<GIdx> for GArr<T, N> {
     fn index_mut(&mut self, gidx: GIdx) -> &mut Self::Output {
         assert!(self.contains(gidx));
         self.data[gidx.idx].as_mut().unwrap()
     }
 }
 
-impl<T> IntoIterator for GVec<T> {
+impl<T, const N: usize> IntoIterator for GArr<T, N> {
     type Item = T;
-    type IntoIter = IntoIter<T, VecIntoIter<Option<T>>>;
+    type IntoIter = IntoIter<T, ArrIntoIter<Option<T>, N>>;
 
     fn into_iter(self) -> Self::IntoIter {
         IntoIter {
@@ -120,9 +178,9 @@ impl<T> IntoIterator for GVec<T> {
     }
 }
 
-impl<T> Generational<T> for GVec<T> {
-    type OwnedIter = VecIntoIter<Option<T>>;
-    type InsertResult = GIdx;
+impl<T, const N: usize> Generational<T> for GArr<T, N> {
+    type OwnedIter = ArrIntoIter<Option<T>, N>;
+    type InsertResult = Result<GIdx, &'static str>;
 
     /// Returns the number of valid elements in `self`.
     /// This may not be representative of the actual underlying length.
@@ -130,14 +188,14 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, [a, b, c]) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.count(), 3);
     ///
     /// chars.remove(b);
     /// assert_eq!(chars.count(), 2);
     /// ```
     fn count(&self) -> usize {
-        self.data.len() - self.dead.len()
+        self.used - self.dead.len()
     }
 
     /// Returns `true` if there are no valid elements in `self`, otherwise
@@ -146,13 +204,14 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
-    /// chars.clear();
+    /// let (mut chars, _) = garr!['a', 'b', 'c'];
+    /// assert!(!chars.is_empty());
     ///
+    /// chars.clear();
     /// assert!(chars.is_empty());
     /// ```
     fn is_empty(&self) -> bool {
-        self.dead.len() == self.data.len()
+        self.dead.len() == self.used
     }
 
     /// Returns `true` if the index passed refers to a valid element.
@@ -160,30 +219,32 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, [a, b, c]) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.contains(b), true);
     ///
     /// chars.remove(b);
     /// assert_eq!(chars.contains(b), false);
     /// ```
     fn contains(&self, gidx: GIdx) -> bool {
-        gidx.idx < self.gens.len()
+        gidx.idx < self.used
             && gidx.gen == self.gens[gidx.idx]
             && self.data[gidx.idx].is_some()
     }
 
-    /// Inserts an item into `self`, returning an index which refers to it.
+    /// Inserts an item into `self`, returning a `Result<GIdx>`.
+    /// If there is no more space available, this will return `Err`.
     ///
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let mut chars = gvec![];
-    /// let a = chars.insert('a');
+    /// let mut chars: GArr<char, 5> = garr![];
+    /// let a = chars.insert('a').unwrap();
     ///
     /// assert_eq!(chars[a], 'a');
     /// ```
     fn insert(&mut self, item: T) -> Self::InsertResult {
-        match self.dead.pop() {
+        if self.is_full() { return Err("insert failed, GArr is at capacity") }
+        Ok(match self.dead.pop() {
             Some(idx) => {
                 self.data[idx] = Some(item);
                 self.gens[idx] += 1;
@@ -193,14 +254,15 @@ impl<T> Generational<T> for GVec<T> {
                 }
             }
             None => {
-                self.data.push(Some(item));
-                self.gens.push(0);
+                self.data[self.used] = Some(item);
+                self.gens[self.used] += 1;
+                self.used += 1;
                 GIdx {
-                    idx: self.data.len() - 1,
-                    gen: 0,
+                    idx: self.used - 1,
+                    gen: 1,
                 }
             }
-        }
+        })
     }
 
     /// Removes the item from `self`, returning `Some(T)` if the
@@ -209,7 +271,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, [a, b, c]) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.remove(a), Some('a'));
     /// assert_eq!(chars.remove(b), Some('b'));
     /// assert_eq!(chars.remove(c), Some('c'));
@@ -227,13 +289,13 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, _) = garr!['a', 'b', 'c'];
     /// chars.clear();
     ///
     /// assert_eq!(chars.count(), 0);
     /// ```
     fn clear(&mut self) {
-        self.dead = (0..self.data.len()).collect();
+        self.dead = (0..N).collect();
         self.data.iter_mut().for_each(|item| {*item = None})
     }
 
@@ -242,7 +304,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, _) = garr!['a', 'b', 'c'];
     /// let vec_chars = chars.extract();
     ///
     /// assert_eq!(chars.count(), 0);
@@ -259,7 +321,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let (chars, [a, b, c]) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.get(b), Some(&'b'));
     /// ```
     fn get(&self, gidx: GIdx) -> Option<&T> {
@@ -272,7 +334,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, [a, b, c]) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.get_mut(b), Some(&mut 'b'));
     /// ```
     fn get_mut(&mut self, gidx: GIdx) -> Option<&mut T> {
@@ -285,7 +347,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, [a, b, c]) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, [a, b, c]) = garr!['a', 'b', 'c'];
     /// let original = chars.set(b, 'B');
     ///
     /// assert_eq!(chars[b], 'B');
@@ -300,7 +362,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (chars, _) = gvec!['a', 'b', 'c'];
+    /// let (chars, _) = garr!['a', 'b', 'c'];
     /// let mut iterator = chars.iter();
     ///
     /// assert_eq!(iterator.next(), Some(&'a'));
@@ -319,7 +381,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, _) = garr!['a', 'b', 'c'];
     /// let mut iterator = chars.iter_mut();
     ///
     /// assert_eq!(iterator.next(), Some(&mut 'a'));
@@ -338,7 +400,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (chars, _) = gvec!['a', 'b', 'c'];
+    /// let (chars, _) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.gather(), vec![&'a', &'b', &'c']);
     /// ```
     fn gather(&self) -> Vec<&T> {
@@ -350,7 +412,7 @@ impl<T> Generational<T> for GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (mut chars, _) = gvec!['a', 'b', 'c'];
+    /// let (mut chars, _) = garr!['a', 'b', 'c'];
     /// assert_eq!(chars.gather_mut(), vec![&mut 'a', &mut 'b', &mut 'c']);
     /// ```
     fn gather_mut(&mut self) -> Vec<&mut T> {
