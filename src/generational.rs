@@ -11,6 +11,7 @@ pub struct GIdx {
     pub(crate) gen: usize,
 }
 
+/// An iterator over all valid data in a `Generational` container.
 #[derive(Clone, Debug)]
 pub struct Iter<'a, T> {
     pub(crate) inner: std::slice::Iter<'a, Option<T>>,
@@ -24,6 +25,7 @@ impl<'a, T> Iterator for Iter<'a, T> {
     }
 }
 
+/// A mutable iterator over all valid data in a `Generational` container.
 #[derive(Debug)]
 pub struct IterMut<'a, T> {
     pub(crate) inner: std::slice::IterMut<'a, Option<T>>,
@@ -37,6 +39,7 @@ impl<'a, T> Iterator for IterMut<'a, T> {
     }
 }
 
+/// An owned iterator over all valid data in a `Generational` container.
 #[derive(Debug)]
 pub struct IntoIter<T, I>
 where
@@ -79,7 +82,8 @@ where
     Self::OwnedIter: Iterator<Item = Option<T>>,
 {
     type OwnedIter;
-
+    type InsertResult;
+    
     /// Returns the number of valid elements in `self`.
     /// This may not be representative of the actual underlying length.
     fn count(&self) -> usize;
@@ -91,7 +95,39 @@ where
     fn contains(&self, gidx: GIdx) -> bool;
 
     /// Inserts an item into `self`, returning an index which refers to it.
-    fn insert(&mut self, item: T) -> GIdx;
+    fn insert(&mut self, item: T) -> Self::InsertResult;
+    /// Inserts an array of multiple items into `self`, returning the corresponding `GIdx`s
+    /// in an array.
+    fn insert_arr<const N: usize>(&mut self, items: [T; N]) -> [Self::InsertResult; N] {
+        items.into_iter().zip(0..N).fold(
+            std::array::from_fn(|_| None),
+            |mut acc, (item, idx)| {
+                acc[idx] = Some(self.insert(item)); acc
+            }
+        ).map(|gidx| gidx.unwrap())
+    }
+    /// Inserts a slice of multiple items into `self`, returning the corresponding `GIdx`s
+    /// in a vec.
+    fn insert_slice(&mut self, items: &[T]) -> Vec<Self::InsertResult>
+        where T: Clone
+    {
+        items.into_iter().fold(
+            vec![],
+            |mut acc, item| {
+                acc.push(self.insert(item.clone())); acc
+            }
+        )
+    }
+    /// Inserts a slice of multiple items into `self`, returning the corresponding `GIdx`s
+    /// in a vec.
+    fn insert_vec(&mut self, items: Vec<T>) -> Vec<Self::InsertResult> {
+        items.into_iter().fold(
+            vec![],
+            |mut acc, item| {
+                acc.push(self.insert(item)); acc
+            }
+        )
+    }
     /// Removes the item from `self`, returning `Some(T)` if the
     /// index is valid, or `None` if the index is not.
     fn remove(&mut self, gidx: GIdx) -> Option<T>;

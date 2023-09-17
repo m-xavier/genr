@@ -7,6 +7,19 @@ use std::{
 
 use crate::generational::*;
 
+/// A convenience macro for creating `GVec`s.
+/// 
+/// # Examples
+/// ```
+/// # use genr::prelude::*;
+/// let empty_a: GVec<&str> = gvec![];
+/// let empty_b: GVec<&str> = GVec::new();
+/// assert_eq!(empty_a.gather(), empty_b.gather());
+/// 
+/// let (foo_a, _) = gvec!["foo"];
+/// let (foo_b, _) = GVec::from(["foo"]);
+/// assert_eq!(foo_a.gather(), foo_b.gather())
+/// ```
 #[macro_export]
 macro_rules! gvec {
     () => {
@@ -64,22 +77,19 @@ impl<T> GVec<T> {
     /// # Examples
     /// ```
     /// # use genr::prelude::*;
-    /// let (chars, [a, b, c]) = GVec::from(['a', 'b', 'c']);
+    /// let (chars, [a, b, c]): (GVec<char>, [GIdx; 3]) = GVec::from(['a', 'b', 'c']);
     /// assert_eq!(chars[a], 'a');
     /// assert_eq!(chars[b], 'b');
     /// assert_eq!(chars[c], 'c');
     /// ```
     pub fn from<const N: usize>(value: [T; N]) -> (Self, [GIdx; N]) {
-        let mut idxs = 0..N;
         (
             Self {
                 data: Vec::from(value.map(|v| Some(v))),
                 gens: Vec::from([0; N]),
                 dead: Vec::new(),
             },
-            [GIdx { idx: 0, gen: 0 }; N].map(|mut g| {
-                g.idx = idxs.next().unwrap(); g
-            }),
+            std::array::from_fn(|i| GIdx { idx: i, gen: 0 }),
         )
     }
 }
@@ -112,6 +122,7 @@ impl<T> IntoIterator for GVec<T> {
 
 impl<T> Generational<T> for GVec<T> {
     type OwnedIter = VecIntoIter<Option<T>>;
+    type InsertResult = GIdx;
 
     /// Returns the number of valid elements in `self`.
     /// This may not be representative of the actual underlying length.
@@ -126,9 +137,7 @@ impl<T> Generational<T> for GVec<T> {
     /// assert_eq!(chars.count(), 2);
     /// ```
     fn count(&self) -> usize {
-        self.data
-            .iter()
-            .fold(0, |acc, i| acc + i.is_some() as usize)
+        self.data.len() - self.dead.len()
     }
 
     /// Returns `true` if there are no valid elements in `self`, otherwise
@@ -173,7 +182,7 @@ impl<T> Generational<T> for GVec<T> {
     ///
     /// assert_eq!(chars[a], 'a');
     /// ```
-    fn insert(&mut self, item: T) -> GIdx {
+    fn insert(&mut self, item: T) -> Self::InsertResult {
         match self.dead.pop() {
             Some(idx) => {
                 self.data[idx] = Some(item);
@@ -208,7 +217,6 @@ impl<T> Generational<T> for GVec<T> {
     /// ```
     fn remove(&mut self, gidx: GIdx) -> Option<T> {
         self.contains(gidx).then(|| {
-            self.gens[gidx.idx] += 1;
             self.dead.push(gidx.idx);
             self.data[gidx.idx].take().unwrap()
         })
@@ -226,9 +234,7 @@ impl<T> Generational<T> for GVec<T> {
     /// ```
     fn clear(&mut self) {
         self.dead = (0..self.data.len()).collect();
-        for item in self.data.iter_mut() {
-            *item = None
-        }
+        self.data.iter_mut().for_each(|item| {*item = None})
     }
 
     /// Clears `self`, returning any valid data in a `Vec`.
@@ -257,8 +263,7 @@ impl<T> Generational<T> for GVec<T> {
     /// assert_eq!(chars.get(b), Some(&'b'));
     /// ```
     fn get(&self, gidx: GIdx) -> Option<&T> {
-        self.contains(gidx)
-            .then(|| self.data[gidx.idx].as_ref().unwrap())
+        self.contains(gidx).then(|| self.data[gidx.idx].as_ref().unwrap())
     }
 
     /// Returns `Some(&mut T)` if the index is valid or `None` if the
@@ -271,8 +276,7 @@ impl<T> Generational<T> for GVec<T> {
     /// assert_eq!(chars.get_mut(b), Some(&mut 'b'));
     /// ```
     fn get_mut(&mut self, gidx: GIdx) -> Option<&mut T> {
-        self.contains(gidx)
-            .then(|| self.data[gidx.idx].as_mut().unwrap())
+        self.contains(gidx).then(|| self.data[gidx.idx].as_mut().unwrap())
     }
 
     /// Sets the value at the provided index to `value`, returning
@@ -288,8 +292,7 @@ impl<T> Generational<T> for GVec<T> {
     /// assert_eq!(original, Some('b'));
     /// ```
     fn set(&mut self, gidx: GIdx, value: T) -> Option<T> {
-        self.contains(gidx)
-            .then(|| self.data[gidx.idx].replace(value).unwrap())
+        self.contains(gidx).then(|| self.data[gidx.idx].replace(value).unwrap())
     }
 
     /// Returns an iterator which iterates over all values.
